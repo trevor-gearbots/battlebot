@@ -3,8 +3,8 @@
 #include <esp_now.h>
 #include <WiFi.h>
 
-#define JOY_X 34
-#define JOY_Y 35
+#define JOY_X 32
+#define JOY_Y 33
 
 // Receiver MAC (CHANGE THIS)
 uint8_t receiverMAC[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};
