@@ -4,10 +4,10 @@
 #include <WiFi.h>
 
 // Motor pins
-#define L_A 25
-#define L_B 26
-#define R_A 27
-#define R_B 14
+#define L_A 32
+#define L_B 33
+#define R_A 25
+#define R_B 26
 
 // PWM settings
 #define PWM_FREQ 20000
@@ -29,7 +29,7 @@ typedef struct {
 } ControlPacket;
 
 // Keep volatile (safe for callback updates)
-volatile ControlPacket current;
+volatile ControlPacket current = {"NONE", 0, 0};
 
 unsigned long lastPacketTime = 0;
 const int timeout = 200;
@@ -91,10 +91,22 @@ void onReceive(const uint8_t *mac, const uint8_t *data, int len) {
 void setup() {
   Serial.begin(115200);
 
+      // Wait for serial connection (with timeout to avoid lockup)
+  unsigned long start = millis();
+  while (!Serial) {
+    if (millis() - start > 10000) break; // 10s timeout
+    delay(10);
+  }
+  delay(200); // helps stabilize some serial monitors
+
+  Serial.println("Serial connected");
+
+  
   WiFi.mode(WIFI_STA);
+    
   Serial.print("RX MAC: ");
   Serial.println(WiFi.macAddress());
-
+  
   // Setup PWM
   ledcSetup(L_A_CH, PWM_FREQ, PWM_RES);
   ledcSetup(L_B_CH, PWM_FREQ, PWM_RES);
@@ -116,7 +128,9 @@ void setup() {
   esp_now_register_recv_cb(onReceive);
 }
 
+
 void loop() {
+
   // Failsafe
   if (millis() - lastPacketTime > timeout) {
     stopAll();
