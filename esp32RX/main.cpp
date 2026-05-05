@@ -132,7 +132,7 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
 
-  Serial.print("MAC: ");
+  Serial.print("RX MAC: ");
   Serial.println(WiFi.macAddress());
 
   // PWM
