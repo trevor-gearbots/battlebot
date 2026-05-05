@@ -5,7 +5,7 @@
 #define JOY_X 32
 #define JOY_Y 33
 
-uint8_t receiverMAC[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};  // you need to put your MAC address here!  ask for help
+uint8_t receiverMAC[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};  // you need to put your Receiver (RX) MAC address here!  ask for help
 
 const char ID[] = "CAR01";
 
