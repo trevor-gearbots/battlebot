@@ -5,44 +5,40 @@
 #define JOY_X 32
 #define JOY_Y 33
 
-// Receiver MAC (CHANGE THIS)
-uint8_t receiverMAC[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};
+uint8_t receiverMAC[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};  // you need to put your MAC address here!  ask for help
 
-// 5-character ID (must match receiver)
 const char ID[] = "CAR01";
 
 typedef struct {
   char id[6];
   int8_t left;
   int8_t right;
+  uint8_t seq;
 } ControlPacket;
 
 ControlPacket packet;
 
+// timing
 unsigned long lastSend = 0;
 const int interval = 50;
 
-// Debug
-unsigned long lastDebugPrint = 0;
-int sendFailCount = 0;
+// diagnostics
+volatile uint32_t sendOK = 0;
+volatile uint32_t sendFail = 0;
+unsigned long lastSendAttemptTime = 0;
+int8_t dbg_left = 0;
+int8_t dbg_right = 0;
+uint8_t dbg_seq = 0;
 
-// ----- SETTINGS -----
+// sequence
+uint8_t seq = 0;
+
+// settings
 #define DEADZONE 10
 #define SMOOTH_SAMPLES 4
 #define USE_EXPO true
 
-// ---------- Helpers ----------
-
-void printMAC(const uint8_t *mac) {
-  char buf[18];
-  snprintf(buf, sizeof(buf),
-           "%02X:%02X:%02X:%02X:%02X:%02X",
-           mac[0], mac[1], mac[2],
-           mac[3], mac[4], mac[5]);
-  Serial.print(buf);
-}
-
-// ---------- Input processing ----------
+// -------- input --------
 
 int readAxisRaw(int pin) {
   long sum = 0;
@@ -63,56 +59,46 @@ int processAxis(int raw) {
     v = (int)(f * 127);
   }
 
+  // clamp defensively
+  if (v > 127) v = 127;
+  if (v < -127) v = -127;
+
   return v;
 }
 
-// ---------- ESP-NOW send callback ----------
+// -------- ESP-NOW send callback --------
 
-void onSend(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.print("Send status to ");
-  printMAC(mac_addr);
-  Serial.print(" : ");
-
+void onSent(const uint8_t *mac, esp_now_send_status_t status) {
   if (status == ESP_NOW_SEND_SUCCESS) {
-    Serial.println("OK");
-    sendFailCount = 0;
+    sendOK++;
   } else {
-    Serial.println("FAIL");
-    sendFailCount++;
+    sendFail++;
   }
 }
 
-// ---------- Setup ----------
+// -------- setup --------
 
 void setup() {
   Serial.begin(115200);
 
   unsigned long start = millis();
-  while (!Serial) {
-    if (millis() - start > 5000) break;
-    delay(10);
-  }
+  while (!Serial && millis() - start < 3000) delay(10);
 
-  Serial.println("\nBooting transmitter...");
+  Serial.println("TX Boot");
 
   WiFi.mode(WIFI_STA);
 
-  Serial.print("STA MAC: ");
+  Serial.print("TX MAC: ");
   Serial.println(WiFi.macAddress());
 
-  Serial.print("Target peer: ");
-  printMAC(receiverMAC);
-  Serial.println();
-
   if (esp_now_init() != ESP_OK) {
-    Serial.println("ERROR: ESP-NOW init failed");
+    Serial.println("ESP-NOW init FAILED");
     return;
   }
 
-  Serial.println("ESP-NOW initialized");
+  Serial.println("ESP-NOW init OK");
 
-  esp_now_register_send_cb(onSend);
-  Serial.println("Send callback registered");
+  esp_now_register_send_cb(onSent);
 
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, receiverMAC, 6);
@@ -120,18 +106,22 @@ void setup() {
   peer.encrypt = false;
 
   if (esp_now_add_peer(&peer) != ESP_OK) {
-    Serial.println("ERROR: Failed to add peer");
+    Serial.println("Add peer FAILED");
     return;
   }
 
-  Serial.println("Peer added successfully");
+  Serial.println("Peer added");
 }
 
-// ---------- Loop ----------
+// -------- loop --------
 
 void loop() {
-  if (millis() - lastSend >= interval) {
-    lastSend = millis();
+  unsigned long now = millis();
+
+  // --- send control packets ---
+  if (now - lastSend >= interval) {
+    lastSend = now;
+    lastSendAttemptTime = now;
 
     int rawX = readAxisRaw(JOY_X);
     int rawY = readAxisRaw(JOY_Y);
@@ -139,39 +129,54 @@ void loop() {
     int x = processAxis(rawX);
     int y = processAxis(rawY);
 
-    int left  = constrain(y + x,  -127, 127);
-    int right = constrain(y - x, -127, 127);
+    // differential mixing
+    int left  = y + x;
+    int right = y - x;
 
+    left  = constrain(left,  -127, 127);
+    right = constrain(right, -127, 127);
+
+    // fill packet
     strncpy(packet.id, ID, sizeof(packet.id));
     packet.id[5] = '\0';
 
     packet.left  = left;
     packet.right = right;
+    packet.seq   = seq++;
+    dbg_left  = left;
+    dbg_right = right;
+    dbg_seq   = seq;
 
-    esp_err_t result = esp_now_send(receiverMAC, (uint8_t*)&packet, sizeof(packet));
+    esp_now_send(receiverMAC, (uint8_t*)&packet, sizeof(packet));
+  }
 
-    if (result != ESP_OK) {
-      Serial.print("Immediate send error: ");
-      Serial.println(result);
-      sendFailCount++;
+  // --- link warning (no successful sends) ---
+  static unsigned long lastWarnPrint = 0;
+
+  if (now - lastSendAttemptTime >= 5000) {
+    if (now - lastWarnPrint >= 5000) {
+      Serial.println("WARN: no send attempts (5s)");
+      lastWarnPrint = now;
     }
+  } else {
+    lastWarnPrint = 0;
+  }
 
-    // Rate-limited debug (250 ms)
-    if (millis() - lastDebugPrint > 250) {
-      lastDebugPrint = millis();
+  // --- 1 Hz status ---
+static unsigned long lastPrint = 0;
+  if (now - lastPrint >= 1000) {
+    Serial.printf(
+      "TX | L:%d R:%d Seq:%u OK:%u FAIL:%u Age:%lu ms\n",
+      dbg_left,
+      dbg_right,
+      dbg_seq,
+      sendOK,
+      sendFail,
+      now - lastSendAttemptTime
+    );
 
-      Serial.print("RAW X:");
-      Serial.print(rawX);
-      Serial.print(" Y:");
-      Serial.print(rawY);
-
-      Serial.print(" | OUT L:");
-      Serial.print(left);
-      Serial.print(" R:");
-      Serial.print(right);
-
-      Serial.print(" | FailCount:");
-      Serial.println(sendFailCount);
-    }
+    sendOK = 0;
+    sendFail = 0;
+    lastPrint = now;
   }
 }
