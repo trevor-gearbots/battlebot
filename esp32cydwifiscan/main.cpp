@@ -2,7 +2,6 @@
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
 
-
 // ==== Display ====
 TFT_eSPI tft = TFT_eSPI();
 #define TFT_WIDTH  240
@@ -68,7 +67,7 @@ uint16_t colorForSSID(const String& s) {
 }
 
 int widthForMHz(int mhz) {
-  int pxPerCh = tft.width() / 13; // ~20 MHz bucket
+  int pxPerCh = tft.width() / 13; // ~40 MHz bucket
   return (mhz == 40) ? pxPerCh * 2 : pxPerCh;
 }
 
@@ -102,7 +101,7 @@ void drawGuides() {
   }
 }
 
-// Trapezoid with side slopes; top width = channel width (20/40 MHz)
+// gaussian curve
 void drawAP(const String& ssid, int ch, int rssi, int mhz = 40) {
 
   int freq = freqFromChannel(ch);
@@ -247,6 +246,11 @@ void setup() {
 
   tft.fillScreen(TFT_BLACK);
   tft.drawString("DISPLAY OK", 10, 10, 1);
+  delay(500);
+
+  pinMode(GLED_PIN, OUTPUT);
+  digitalWrite(RLED_PIN, HIGH); // off
+  digitalWrite(GLED_PIN, LOW); // on
 
 }
 
