@@ -142,11 +142,42 @@ button.active {
     <div id="esp-rb-pin" class="motor-indicator"></div>
   </div>
 
-  <div style="margin-top:15px; display:flex; justify-content:center; align-items:center; gap:20px;">
-    <span id="current-command">Current: STOP</span>
-    <span id="wifi-status" class="wifi-status wifi-disconnected">WiFi: ?</span>
-    <span id="latency-status">Latency: -- ms</span>
+ <div style="
+  margin-top:15px;
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  gap:20px;
+">
+
+  <div style="
+    width:120px;
+    text-align:center;
+  ">
+    <div>Command</div>
+    <div id="current-command">STOP</div>
   </div>
+
+  <div style="
+    width:120px;
+    text-align:center;
+  ">
+    <div>WiFi</div>
+    <div id="wifi-status"
+      class="wifi-status wifi-disconnected">
+      ?
+    </div>
+  </div>
+
+  <div style="
+    width:120px;
+    text-align:center;
+  ">
+    <div>Latency</div>
+    <div id="latency-status">-- ms</div>
+  </div>
+
+</div>
 
 </div>
 
@@ -188,12 +219,12 @@ function setEspDirection(dir){
 function updateLatency(ms){
   latencyMs = ms;
   document.getElementById("latency-status").textContent =
-    "Latency: " + ms + " ms";
+    ms + " ms";;
 }
 
 function updateWiFi(ok){
   const el=document.getElementById("wifi-status");
-  el.textContent = ok ? "WiFi: Connected" : "WiFi: Lost";
+  el.textContent = ok ? "Connected" : "Lost";
   el.className = "wifi-status " + (ok?"wifi-connected":"wifi-disconnected");
 }
 
@@ -221,8 +252,7 @@ function setCommand(cmd){
 
   updateButtonHighlight(cmd);
 
-  document.getElementById("current-command").textContent =
-    "Current: " + cmd;
+document.getElementById("current-command").textContent = cmd;
 
   setDirection(DIR[cmd] ?? DIR.STOP);
 }
@@ -258,8 +288,7 @@ function connect(){
       return;
     }
 
-    document.getElementById("current-command").textContent =
-      "Current: " + e.data;
+  document.getElementById("current-command").textContent = e.data;
 
     setEspDirection(DIR[e.data] ?? DIR.STOP);
   };
@@ -600,5 +629,4 @@ void loop() {
     lastHeartbeatBroadcast = millis();
   }
 }
-
 
