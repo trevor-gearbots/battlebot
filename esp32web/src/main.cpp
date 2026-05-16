@@ -54,8 +54,8 @@ body {
 
 .grid {
   display: grid;
-  grid-template-columns: 100px 100px 100px;
-  grid-template-rows: 100px 100px 100px;
+  grid-template-columns: 80px 80px 80px;
+  grid-template-rows: 80px 80px 80px;
   gap: 10px;
   justify-content: center;
   margin-top: 30px;
@@ -76,7 +76,7 @@ button.active {
 }
 
 .motor-status {
-  margin: 30px auto;
+  margin: 20px auto;
   padding: 20px;
   border: 2px solid #ddd;
   border-radius: 10px;
@@ -86,8 +86,8 @@ button.active {
 
 .motor-indicator {
   display: inline-block;
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   margin: 5px;
   border-radius: 50%;
   background-color: #ccc;
@@ -118,7 +118,7 @@ button.active {
 
 <body>
 
-<h2>ESP32 Motor Control</h2>
+<h3>ESP32 Motor Control</h3>
 
 <div class="grid">
   <div></div><button id="fwd">F</button><div></div>
@@ -272,11 +272,13 @@ function connect(){
 
   ws.onmessage = (e)=>{
     lastRxTime = performance.now();
-    if(e.data === "HB"){
-      return;
-    }
-
-    updateLatency(Math.round(performance.now() - pingStartTime));
+    if(e.data.startsWith("PING:")){
+      lastPongTime = performance.now();
+      updateLatency(
+        Math.round(performance.now() - pingStartTime)
+      );
+  return;
+  }
 
     if(e.data==="WIFI_OK"){
       updateWiFi(true);
@@ -309,22 +311,28 @@ function connect(){
 connect();
 
 setInterval(()=>{
-
   const connected =
     ws &&
     ws.readyState === 1 &&
-    (performance.now() - lastRxTime < 1000);
-
+    (performance.now() - lastPongTime < 1500);
   updateWiFi(connected);
-
 },250);
 
 // Continuously transmit active command
-setInterval(()=>{
-  pingStartTime = performance.now();
-  send(activeCommand);
+let pingId = 0;
+let lastPongTime = 0;
 
+setInterval(()=>{
+  send(activeCommand);
 },100);
+
+setInterval(()=>{
+  if(ws && ws.readyState === 1){
+    pingId++;
+    pingStartTime = performance.now();
+    ws.send("PING:" + pingId);
+  }
+},500);
 
 // -------------------- INPUT --------------------
 
@@ -435,6 +443,14 @@ window.addEventListener("blur",()=>{
   setCommand("STOP");
 });
 
+window.addEventListener("offline",()=>{
+  updateWiFi(false);
+});
+
+window.addEventListener("online",()=>{
+  connect();
+});
+
 </script>
 
 </body>
@@ -542,6 +558,11 @@ void onWsEvent(AsyncWebSocket *server,
     memcpy(msg, data, len);
     msg[len] = '\0';
 
+    if (strncmp(msg, "PING:", 5) == 0) {
+      client->text(msg);
+      return;
+    }
+
     if (strcmp(msg, "F") == 0 ||
         strcmp(msg, "B") == 0 ||
         strcmp(msg, "L") == 0 ||
@@ -580,7 +601,6 @@ void setup() {
 void loop() {
   static unsigned long lastReconnectAttempt = 0;
   static unsigned long lastRSSI = 0;
-  static unsigned long lastHeartbeatBroadcast = 0;
   static unsigned long lastCleanup = 0;
 
   // Cleanup websocket clients
@@ -623,10 +643,5 @@ void loop() {
     }
   }
 
-  // Heartbeat
-  if (millis() - lastHeartbeatBroadcast > 250) {
-    ws.textAll("HB");
-    lastHeartbeatBroadcast = millis();
-  }
-}
 
+}
