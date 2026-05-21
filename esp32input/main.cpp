@@ -1,6 +1,7 @@
 //use single joystick to control brightness of LED's in same pattern used for motor control
 //input mixing, switch on/off, debounce
 //not tested
+//to-do: revisit input mixing for circular mapping, input timing loop
 
 #include <Arduino.h>
 
