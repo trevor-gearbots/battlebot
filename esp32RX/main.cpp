@@ -3,45 +3,63 @@
 #include <esp_now.h>
 #include <WiFi.h>
 
-// Motor pins
+// ---------------- Pins ----------------
+
 #define L_A 32
 #define L_B 33
 #define R_A 25
 #define R_B 26
 
-// PWM settings
+// ---------------- PWM ----------------
+
 #define PWM_FREQ 20000
 #define PWM_RES 8
 
-// PWM channels
 #define L_A_CH 0
 #define L_B_CH 1
 #define R_A_CH 2
 #define R_B_CH 3
 
-// Expected ID
-const char expectedID[] = "CAR01";
+// ---------------- Packet ----------------
 
 typedef struct {
-  char id[6];
   int8_t left;
   int8_t right;
-  uint8_t seq;   // add on TX side as well
+  uint8_t seq;
 } ControlPacket;
 
-volatile ControlPacket current = {"NONE", 0, 0, 0};
+// ---------------- Shared state ----------------
+
+volatile ControlPacket current = {0, 0, 0};
+
 volatile uint32_t packetCount = 0;
+volatile uint32_t duplicatePackets = 0;
+volatile uint32_t missedPackets = 0;
+
+volatile unsigned long lastPacketTime = 0;
+volatile bool failsafeActive = true;
+
+volatile uint8_t lastSeq = 0;
+volatile bool firstPacket = true;
 
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
-unsigned long lastPacketTime = 0;
-const int timeout = 200;
-unsigned long lastNoPacketPrint = 0;
+// ---------------- Timing ----------------
 
-uint8_t lastSeq = 0;
-bool failsafeActive = true;
+const unsigned long timeout = 200;
 
-// --- PWM helpers ---
+// ---------------- Debug ----------------
+
+struct DebugInfo {
+  int8_t left;
+  int8_t right;
+  uint8_t seq;
+};
+
+volatile DebugInfo dbg = {0, 0, 0};
+
+// ---------------- PWM helpers ----------------
+
 uint8_t toPWM(int val) {
   int pwm = map(abs(val), 0, 127, 0, 255);
 
@@ -59,10 +77,12 @@ void driveMotor(int val, int chA, int chB) {
   if (val > 0) {
     ledcWrite(chA, pwm);
     ledcWrite(chB, 0);
-  } else if (val < 0) {
+  }
+  else if (val < 0) {
     ledcWrite(chA, 0);
     ledcWrite(chB, pwm);
-  } else {
+  }
+  else {
     ledcWrite(chA, 0);
     ledcWrite(chB, 0);
   }
@@ -75,67 +95,71 @@ void stopAll() {
   ledcWrite(R_B_CH, 0);
 }
 
-// --- ESP-NOW receive ---
-void onReceive(const uint8_t *mac, const uint8_t *data, int len) {
+// ---------------- ESP-NOW RX ----------------
+
+void onReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   if (len != sizeof(ControlPacket)) {
-    Serial.println("RX: bad length");
     return;
   }
 
   ControlPacket incoming;
   memcpy(&incoming, data, sizeof(incoming));
-  incoming.id[5] = '\0';
 
-  if (strcmp(incoming.id, expectedID) != 0) {
-    Serial.println("RX: ID mismatch");
-    return;
+  // defensive clamp
+  incoming.left = constrain(incoming.left, -127, 127);
+  incoming.right = constrain(incoming.right, -127, 127);
+
+  portENTER_CRITICAL(&mux);
+
+  // duplicate / missed packet detection
+  if (!firstPacket) {
+    if (incoming.seq == lastSeq) {
+      duplicatePackets++;
+      portEXIT_CRITICAL(&mux);
+      return;
+    }
+
+    uint8_t expected = lastSeq + 1;
+
+    if (incoming.seq != expected) {
+      missedPackets += (uint8_t)(incoming.seq - expected);
+    }
   }
 
-  // Clamp values (defensive)
-  if (incoming.left > 127) incoming.left = 127;
-  if (incoming.left < -127) incoming.left = -127;
-  if (incoming.right > 127) incoming.right = 127;
-  if (incoming.right < -127) incoming.right = -127;
-
-  // Sequence check
-  if (incoming.seq == lastSeq) {
-    Serial.println("RX: duplicate packet");
-  }
+  firstPacket = false;
   lastSeq = incoming.seq;
 
-  // Critical section write
-  portENTER_CRITICAL_ISR(&mux);
   memcpy((void*)&current, &incoming, sizeof(ControlPacket));
-  portEXIT_CRITICAL_ISR(&mux);
+
+  dbg.left = incoming.left;
+  dbg.right = incoming.right;
+  dbg.seq = incoming.seq;
 
   lastPacketTime = millis();
-
-  // Print minimal RX info
-  Serial.printf("RX OK | L:%d R:%d Seq:%u RSSI:%d\n",
-                incoming.left,
-                incoming.right,
-                incoming.seq,
-                WiFi.RSSI());
-
   failsafeActive = false;
   packetCount++;
+
+  portEXIT_CRITICAL(&mux);
 }
 
-// --- Setup ---
+// ---------------- Setup ----------------
+
 void setup() {
   Serial.begin(115200);
 
   unsigned long start = millis();
-  while (!Serial && millis() - start < 3000) delay(10);
+  while (!Serial && millis() - start < 3000) {
+    delay(10);
+  }
 
-  Serial.println("Boot");
+  Serial.println("RX Boot");
 
   WiFi.mode(WIFI_STA);
 
   Serial.print("RX MAC: ");
   Serial.println(WiFi.macAddress());
 
-  // PWM
+  // PWM setup
   ledcSetup(L_A_CH, PWM_FREQ, PWM_RES);
   ledcSetup(L_B_CH, PWM_FREQ, PWM_RES);
   ledcSetup(R_A_CH, PWM_FREQ, PWM_RES);
@@ -148,6 +172,8 @@ void setup() {
 
   stopAll();
 
+  lastPacketTime = millis();
+
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init FAILED");
     return;
@@ -158,11 +184,13 @@ void setup() {
   esp_now_register_recv_cb(onReceive);
 }
 
-// --- Loop ---
+// ---------------- Loop ----------------
+
 void loop() {
   unsigned long now = millis();
 
-  // --- 5-second no-packet warning ---
+  // ----- no packets warning -----
+
   static unsigned long lastNoPacketPrint = 0;
 
   if (now - lastPacketTime >= 5000) {
@@ -170,42 +198,73 @@ void loop() {
       Serial.println("WARN: no packets received (5s)");
       lastNoPacketPrint = now;
     }
-  } else {
-    // reset so it prints again on next outage
+  }
+  else {
     lastNoPacketPrint = 0;
   }
 
-  // --- Failsafe handling ---
+  // ----- failsafe -----
+
   if (now - lastPacketTime > timeout) {
     if (!failsafeActive) {
       Serial.println("FAILSAFE: timeout");
       failsafeActive = true;
     }
+
     stopAll();
     delay(10);
     return;
   }
 
-  // --- Normal operation ---
-  failsafeActive = false;
+  // ----- copy shared state -----
 
   ControlPacket local;
+  DebugInfo localDbg;
+
+  uint32_t localPackets;
+  uint32_t localDupes;
+  uint32_t localMissed;
+
   portENTER_CRITICAL(&mux);
+
   memcpy(&local, (const void*)&current, sizeof(ControlPacket));
+  memcpy(&localDbg, (const void*)&dbg, sizeof(DebugInfo));
+
+  localPackets = packetCount;
+  localDupes = duplicatePackets;
+  localMissed = missedPackets;
+
   portEXIT_CRITICAL(&mux);
 
-  driveMotor(local.left,  L_A_CH, L_B_CH);
+  // ----- motor drive -----
+
+  driveMotor(local.left, L_A_CH, L_B_CH);
   driveMotor(local.right, R_A_CH, R_B_CH);
 
-  // --- 1 Hz status ---
+  // ----- status -----
+
   static unsigned long lastPrint = 0;
+
   if (now - lastPrint >= 1000) {
-    Serial.printf("RUN | L:%d R:%d Age:%lu ms Pkts:%u\n",
-                  local.left,
-                  local.right,
-                  now - lastPacketTime,
-                  packetCount);
-    lastPrint = now;
+    Serial.printf(
+      "RUN | L:%d R:%d Seq:%u Age:%lu ms RX:%u DUP:%u MISS:%u\n",
+      localDbg.left,
+      localDbg.right,
+      localDbg.seq,
+      now - lastPacketTime,
+      localPackets,
+      localDupes,
+      localMissed
+    );
+
+    portENTER_CRITICAL(&mux);
+
     packetCount = 0;
+    duplicatePackets = 0;
+    missedPackets = 0;
+
+    portEXIT_CRITICAL(&mux);
+
+    lastPrint = now;
   }
 }
