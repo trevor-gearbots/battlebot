@@ -17,6 +17,8 @@
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
 
+const char* CODE_VERSION = "v0.31";
+
 // -------------------- GLOBALS --------------------
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -24,7 +26,7 @@ AsyncWebSocket ws("/ws");
 unsigned long lastCommandTime = 0;
 const unsigned long commandTimeout = 300;
 
-String currentState = "STOP";
+char currentState[8] = "STOP";
 
 // -------------------- MOTOR PINS --------------------
 #define LeftA  32
@@ -54,8 +56,8 @@ body {
 
 .grid {
   display: grid;
-  grid-template-columns: 100px 100px 100px;
-  grid-template-rows: 100px 100px 100px;
+  grid-template-columns: 80px 80px 80px;
+  grid-template-rows: 80px 80px 80px;
   gap: 10px;
   justify-content: center;
   margin-top: 30px;
@@ -76,7 +78,7 @@ button.active {
 }
 
 .motor-status {
-  margin: 30px auto;
+  margin: 20px auto;
   padding: 20px;
   border: 2px solid #ddd;
   border-radius: 10px;
@@ -86,8 +88,8 @@ button.active {
 
 .motor-indicator {
   display: inline-block;
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   margin: 5px;
   border-radius: 50%;
   background-color: #ccc;
@@ -118,7 +120,7 @@ button.active {
 
 <body>
 
-<h2>ESP32 Motor Control</h2>
+<h3>ESP32 Motor Control</h3>
 
 <div class="grid">
   <div></div><button id="fwd">F</button><div></div>
@@ -127,18 +129,62 @@ button.active {
 </div>
 
 <div class="motor-status">
+
   <div id="la-pin" class="motor-indicator"></div>
   <div id="lb-pin" class="motor-indicator"></div>
   <div id="ra-pin" class="motor-indicator"></div>
   <div id="rb-pin" class="motor-indicator"></div>
 
-<div style="margin-top:15px; display:flex; justify-content:center; align-items:center; gap:20px;">
-  <span id="current-command">Current: STOP</span>
-  <span id="wifi-status" class="wifi-status wifi-disconnected">WiFi: ?</span>
+  <div style="margin-top:20px;">
+    <div>ESP32 Motor State</div>
+
+    <div id="esp-la-pin" class="motor-indicator"></div>
+    <div id="esp-lb-pin" class="motor-indicator"></div>
+    <div id="esp-ra-pin" class="motor-indicator"></div>
+    <div id="esp-rb-pin" class="motor-indicator"></div>
+  </div>
+
+ <div style="
+  margin-top:15px;
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  gap:20px;
+">
+
+  <div style="
+    width:120px;
+    text-align:center;
+  ">
+    <div>Command</div>
+    <div id="current-command">STOP</div>
+  </div>
+
+  <div style="
+    width:120px;
+    text-align:center;
+  ">
+    <div>WiFi</div>
+    <div id="wifi-status"
+      class="wifi-status wifi-disconnected">
+      ?
+    </div>
+  </div>
+
+  <div style="
+    width:120px;
+    text-align:center;
+  ">
+    <div>Latency</div>
+    <div id="latency-status">-- ms</div>
+  </div>
+
 </div>
+
 </div>
 
 <script>
+
 const DIR = {
   STOP:0b0000,
   F:0b1010,
@@ -147,7 +193,9 @@ const DIR = {
   R:0b1001
 };
 
-let lastRxTime = performance.now();
+let lastRxTime = Infinity;
+let pingStartTime = 0;
+let latencyMs = 0;
 
 let ws;
 let activeCommand = "STOP";
@@ -163,9 +211,22 @@ function setDirection(dir){
   setPin("rb-pin",(dir>>0)&1);
 }
 
+function setEspDirection(dir){
+  setPin("esp-la-pin",(dir>>3)&1);
+  setPin("esp-lb-pin",(dir>>2)&1);
+  setPin("esp-ra-pin",(dir>>1)&1);
+  setPin("esp-rb-pin",(dir>>0)&1);
+}
+
+function updateLatency(ms){
+  latencyMs = ms;
+  document.getElementById("latency-status").textContent =
+    ms + " ms";;
+}
+
 function updateWiFi(ok){
   const el=document.getElementById("wifi-status");
-  el.textContent = ok ? "WiFi: Connected" : "WiFi: Lost";
+  el.textContent = ok ? "Connected" : "Lost";
   el.className = "wifi-status " + (ok?"wifi-connected":"wifi-disconnected");
 }
 
@@ -175,15 +236,52 @@ function send(cmd){
   }
 }
 
+function updateButtonHighlight(cmd){
+
+  Object.values(commandButtons).forEach(id=>{
+    document.getElementById(id).classList.remove("active");
+  });
+
+  const activeId = commandButtons[cmd];
+
+  if (activeId) {
+    document.getElementById(activeId).classList.add("active");
+  }
+}
+
+function setCommand(cmd){
+  activeCommand = cmd;
+
+  updateButtonHighlight(cmd);
+
+document.getElementById("current-command").textContent = cmd;
+
+  setDirection(DIR[cmd] ?? DIR.STOP);
+}
+
 function connect(){
+
   ws = new WebSocket("ws://" + location.host + "/ws");
 
   ws.onopen = ()=>{
+    lastRxTime = performance.now();
+    activeCommand = "STOP";
+    updateButtonHighlight("STOP");
+    setDirection(DIR.STOP);
+    send("STOP");
     updateWiFi(true);
   };
 
   ws.onmessage = (e)=>{
     lastRxTime = performance.now();
+    if(e.data.startsWith("PING:")){
+      lastPongTime = performance.now();
+      updateLatency(
+        Math.round(performance.now() - pingStartTime)
+      );
+  return;
+  }
+
     if(e.data==="WIFI_OK"){
       updateWiFi(true);
       return;
@@ -194,13 +292,15 @@ function connect(){
       return;
     }
 
-    document.getElementById("current-command").textContent =
-      "Current: " + e.data;
+  document.getElementById("current-command").textContent = e.data;
 
-    setDirection(DIR[e.data] ?? DIR.STOP);
+    setEspDirection(DIR[e.data] ?? DIR.STOP);
   };
 
   ws.onclose = ()=>{
+    activeCommand = "STOP";
+    updateButtonHighlight("STOP");
+    setDirection(DIR.STOP);
     updateWiFi(false);
     setTimeout(connect,1000);
   };
@@ -211,21 +311,30 @@ function connect(){
 }
 
 connect();
-setInterval(()=>{
 
+setInterval(()=>{
   const connected =
     ws &&
     ws.readyState === 1 &&
-    (performance.now() - lastRxTime < 1000);
-
+    (performance.now() - lastPongTime < 1500);
   updateWiFi(connected);
-
 },250);
 
 // Continuously transmit active command
+let pingId = 0;
+let lastPongTime = 0;
+
 setInterval(()=>{
   send(activeCommand);
 },100);
+
+setInterval(()=>{
+  if(ws && ws.readyState === 1){
+    pingId++;
+    pingStartTime = performance.now();
+    ws.send("PING:" + pingId);
+  }
+},500);
 
 // -------------------- INPUT --------------------
 
@@ -254,40 +363,21 @@ const commandButtons = {
   "STOP":"stop"
 };
 
-function updateButtonHighlight(cmd){
-
-  Object.values(commandButtons).forEach(id=>{
-    document.getElementById(id).classList.remove("active");
-  });
-
-  const activeId = commandButtons[cmd];
-
-  if (activeId) {
-    document.getElementById(activeId).classList.add("active");
-  }
-}
-
-function setCommand(cmd){
-  activeCommand = cmd;
-  updateButtonHighlight(cmd);
-}
-
 function bindButton(id,cmd){
-
   const el=document.getElementById(id);
-
   el.onmousedown = ()=> setCommand(cmd);
-
   el.onmouseup = ()=> setCommand("STOP");
-
   el.onmouseleave = ()=> setCommand("STOP");
-
   el.ontouchstart = (e)=>{
     e.preventDefault();
     setCommand(cmd);
   };
 
   el.ontouchend = ()=>{
+    setCommand("STOP");
+  };
+
+  el.ontouchcancel = ()=>{
     setCommand("STOP");
   };
 }
@@ -335,35 +425,34 @@ function updateKeyboardCommand(){
 }
 
 document.addEventListener("keydown",(e)=>{
-
   if (keyToCommand[e.key] !== undefined) {
-
     e.preventDefault();
-
     pressedKeys.add(e.key);
-
     updateKeyboardCommand();
   }
 });
 
 document.addEventListener("keyup",(e)=>{
-
   if (keyToCommand[e.key] !== undefined) {
-
     e.preventDefault();
-
     pressedKeys.delete(e.key);
-
     updateKeyboardCommand();
   }
 });
 
 window.addEventListener("blur",()=>{
-
   pressedKeys.clear();
-
   setCommand("STOP");
 });
+
+window.addEventListener("offline",()=>{
+  updateWiFi(false);
+});
+
+window.addEventListener("online",()=>{
+  connect();
+});
+
 </script>
 
 </body>
@@ -372,45 +461,41 @@ window.addEventListener("blur",()=>{
 
 // -------------------- MOTOR --------------------
 void setDirection(uint8_t dir) {
-  digitalWrite(LeftA, (dir >> 3) & 1);
-  digitalWrite(LeftB, (dir >> 2) & 1);
+  digitalWrite(LeftA,  (dir >> 3) & 1);
+  digitalWrite(LeftB,  (dir >> 2) & 1);
   digitalWrite(RightA, (dir >> 1) & 1);
   digitalWrite(RightB, (dir >> 0) & 1);
 }
 
-void handleCommand(String msg) {
-
+void handleCommand(const char* msg) {
   lastCommandTime = millis();
+  if (strcmp(currentState, msg) == 0) {
+    return;
+  }
 
-  if (currentState == msg) return;
-
-  currentState = msg;
+  strncpy(currentState, msg, sizeof(currentState) - 1);
+  currentState[sizeof(currentState) - 1] = '\0';
 
   uint8_t dir = DIR_STOP;
 
-  if (msg == "F") dir = DIR_FWD;
-  else if (msg == "B") dir = DIR_REV;
-  else if (msg == "L") dir = DIR_LEFT;
-  else if (msg == "R") dir = DIR_RIGHT;
+  if      (strcmp(msg, "F") == 0)    dir = DIR_FWD;
+  else if (strcmp(msg, "B") == 0)    dir = DIR_REV;
+  else if (strcmp(msg, "L") == 0)    dir = DIR_LEFT;
+  else if (strcmp(msg, "R") == 0)    dir = DIR_RIGHT;
 
   setDirection(dir);
-
   ws.textAll(currentState);
 }
 
 // -------------------- WIFI EVENTS --------------------
 void onWiFiEvent(WiFiEvent_t event) {
-
   switch (event) {
-
     case ARDUINO_EVENT_WIFI_STA_START:
       Serial.println("[WiFi] STA started");
       break;
-
     case ARDUINO_EVENT_WIFI_STA_CONNECTED:
       Serial.println("[WiFi] Connected to AP");
       break;
-
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       Serial.print("[WiFi] IP: ");
       Serial.println(WiFi.localIP());
@@ -429,29 +514,19 @@ void onWiFiEvent(WiFiEvent_t event) {
 
 // -------------------- WIFI START --------------------
 void startWiFi() {
-
   WiFi.mode(WIFI_STA);
-
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
-
   WiFi.setAutoReconnect(true);
   WiFi.persistent(false);
-
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
-
+  WiFi.setTxPower(WIFI_POWER_11dBm);
   Serial.print("MAC Address: ");
   Serial.println(WiFi.macAddress());
-
   WiFi.begin(ssid, password);
-
   Serial.println("[WiFi] Connecting...");
-
   unsigned long startAttempt = millis();
-
   while (WiFi.status() != WL_CONNECTED &&
          millis() - startAttempt < 8000) {
-
     delay(250);
     Serial.print(".");
   }
@@ -472,25 +547,29 @@ void onWsEvent(AsyncWebSocket *server,
                size_t len) {
 
   if (type == WS_EVT_CONNECT) {
-
     client->text("WIFI_OK");
     client->text(currentState);
   }
 
   else if (type == WS_EVT_DATA) {
-
-    String msg;
-    msg.reserve(len);
-
-    for (size_t i = 0; i < len; i++) {
-      msg += (char)data[i];
+    char msg[8] = {0};
+    if (len >= sizeof(msg)) {
+      return;
     }
 
-    if (msg == "F" ||
-        msg == "B" ||
-        msg == "L" ||
-        msg == "R" ||
-        msg == "STOP") {
+    memcpy(msg, data, len);
+    msg[len] = '\0';
+
+    if (strncmp(msg, "PING:", 5) == 0) {
+      client->text(msg);
+      return;
+    }
+
+    if (strcmp(msg, "F") == 0 ||
+        strcmp(msg, "B") == 0 ||
+        strcmp(msg, "L") == 0 ||
+        strcmp(msg, "R") == 0 ||
+        strcmp(msg, "STOP") == 0) {
 
       handleCommand(msg);
     }
@@ -502,24 +581,24 @@ void setup() {
 
   Serial.begin(115200);
 
+  Serial.println();
+  Serial.print("ESP32 Motor Controller ");
+  Serial.println(CODE_VERSION);
+
   pinMode(LeftA, OUTPUT);
   pinMode(LeftB, OUTPUT);
   pinMode(RightA, OUTPUT);
   pinMode(RightB, OUTPUT);
 
   setDirection(DIR_STOP);
-
   lastCommandTime = millis();
-
   WiFi.onEvent(onWiFiEvent);
-
   startWiFi();
-
   ws.onEvent(onWsEvent);
-
   server.addHandler(&ws);
-
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = index_html;
+    html.replace("%VERSION%", CODE_VERSION);
     request->send(200, "text/html", index_html);
   });
 
@@ -528,26 +607,28 @@ void setup() {
 
 // -------------------- LOOP --------------------
 void loop() {
-
-  ws.cleanupClients();
-
   static unsigned long lastReconnectAttempt = 0;
   static unsigned long lastRSSI = 0;
-  static unsigned long lastHeartbeatBroadcast = 0;
+  static unsigned long lastCleanup = 0;
+
+  // Cleanup websocket clients
+  if (millis() - lastCleanup > 1000) {
+    ws.cleanupClients();
+    lastCleanup = millis();
+  }
 
   // Reconnect logic
   if (WiFi.status() != WL_CONNECTED) {
-
     if (millis() - lastReconnectAttempt > 15000) {
       Serial.println("[WiFi] Reconnecting...");
       WiFi.reconnect();
       lastReconnectAttempt = millis();
     }
 
-    if (currentState != "STOP") {
+    if (strcmp(currentState, "STOP") != 0) {
       Serial.println("[FAILSAFE] WiFi lost -> STOP");
       setDirection(DIR_STOP);
-      currentState = "STOP";
+      strcpy(currentState, "STOP");
     }
 
     return;
@@ -555,7 +636,6 @@ void loop() {
 
   // RSSI report
   if (millis() - lastRSSI > 5000) {
-
     Serial.print("[WiFi] RSSI: ");
     Serial.println(WiFi.RSSI());
     lastRSSI = millis();
@@ -563,17 +643,13 @@ void loop() {
 
   // Command timeout fail-safe
   if (millis() - lastCommandTime > commandTimeout) {
-
-    if (currentState != "STOP") {
+    if (strcmp(currentState, "STOP") != 0) {
       Serial.println("[FAILSAFE] Command timeout -> STOP");
       setDirection(DIR_STOP);
-      currentState = "STOP";
+      strcpy(currentState, "STOP");
       ws.textAll("STOP");
     }
   }
 
-  if (millis() - lastHeartbeatBroadcast > 250) {
-    ws.textAll("HB");
-    lastHeartbeatBroadcast = millis();
-  }
+
 }
