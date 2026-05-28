@@ -121,6 +121,7 @@ button.active {
 <body>
 
 <h3>ESP32 Motor Control</h3>
+<div>Code Version: %VERSION%</div>
 
 <div class="grid">
   <div></div><button id="fwd">F</button><div></div>
@@ -599,7 +600,7 @@ void setup() {
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     String html = index_html;
     html.replace("%VERSION%", CODE_VERSION);
-    request->send(200, "text/html", index_html);
+    request->send(200, "text/html", html);
   });
 
   server.begin();
