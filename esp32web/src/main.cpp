@@ -37,7 +37,7 @@ char currentState[8] = "STOP";
 // Bit Order: LA LB RA RB
 #define DIR_STOP  0b0000
 #define DIR_FWD   0b1010
-#define DIR_REV   0b0101
+#define DIR_BACK   0b0101
 #define DIR_LEFT  0b0110
 #define DIR_RIGHT 0b1001
 
@@ -126,7 +126,7 @@ button.active {
 <div class="grid">
   <div></div><button id="fwd">F</button><div></div>
   <button id="left">L</button><button id="stop">STOP</button><button id="right">R</button>
-  <div></div><button id="rev">REV</button><div></div>
+  <div></div><button id="back">B</button><div></div>
 </div>
 
 <div class="motor-status">
@@ -358,7 +358,7 @@ const keyToCommand = {
 
 const commandButtons = {
   "F":"fwd",
-  "B":"rev",
+  "B":"back",
   "L":"left",
   "R":"right",
   "STOP":"stop"
@@ -384,7 +384,7 @@ function bindButton(id,cmd){
 }
 
 bindButton("fwd","F");
-bindButton("rev","B");
+bindButton("back","B");
 bindButton("left","L");
 bindButton("right","R");
 
@@ -480,7 +480,7 @@ void handleCommand(const char* msg) {
   uint8_t dir = DIR_STOP;
 
   if      (strcmp(msg, "F") == 0)    dir = DIR_FWD;
-  else if (strcmp(msg, "B") == 0)    dir = DIR_REV;
+  else if (strcmp(msg, "B") == 0)    dir = DIR_BACK;
   else if (strcmp(msg, "L") == 0)    dir = DIR_LEFT;
   else if (strcmp(msg, "R") == 0)    dir = DIR_RIGHT;
 
