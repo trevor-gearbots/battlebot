@@ -130,6 +130,7 @@ button.active {
 </div>
 
 <div class="motor-status">
+<div>Browser Command Sent</div>
 
   <div id="la-pin" class="motor-indicator"></div>
   <div id="lb-pin" class="motor-indicator"></div>
